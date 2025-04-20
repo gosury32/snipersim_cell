@@ -112,6 +112,9 @@ NucaCache::write(IntPtr address, Byte* data_buf, bool& eviction, IntPtr& evict_a
          }
       }
 
+      if (count)
+         ((PrL1CacheBlockInfo*)m_cache->peekSingleLine(address))->setCState(CacheState::MODIFIED);
+
       if (count) ++m_write_misses;
    }
    if (count) ++m_writes;
