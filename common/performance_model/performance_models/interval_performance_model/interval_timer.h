@@ -13,6 +13,10 @@
 #include "boost/tuple/tuple.hpp"
 #include "core.h"
 #include "contention_model.h"
+#include <cstdint>          // uint64_t
+#include <unordered_map>
+#include <unordered_set>
+#include <string>
 
 #define DEBUG_IT_INSN_PRINT 0
 
@@ -86,6 +90,12 @@ private:
    Windows *m_windows;
    PerformanceModel *m_perf_model;
    const ComponentPeriod *m_frequency_domain;
+
+   std::unordered_map<uint64_t, uint32_t> fpga_latency_map;
+   std::unordered_set<uint64_t> accelerated_set;
+   bool m_lastWasAccelerated;
+   std::unordered_map<uint64_t,uint64_t> accel_exec_count;
+   void initFPGAConfig();
 
 #if DEBUG_IT_INSN_PRINT
    FILE *m_insn_log;

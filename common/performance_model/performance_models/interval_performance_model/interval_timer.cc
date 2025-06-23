@@ -19,6 +19,8 @@
 #include <algorithm>
 #include <iostream>
 #include <cstdio>
+#include <cstdint>    // uint64_t
+#include <cstdlib>     // strtoull, atoi
 
 IntervalTimer::IntervalTimer(
          Core *core, PerformanceModel *_perf, const CoreModel *core_model,
@@ -39,6 +41,7 @@ IntervalTimer::IntervalTimer(
       , m_perf_model(_perf)
       , m_frequency_domain(core->getDvfsDomain())
 {
+   initFPGAConfig();
 
    // Granularity of memory dependencies, in bytes
    UInt64 mem_gran = Sim()->getCfg()->getIntArray("perf_model/core/interval_timer/memory_dependency_granularity", core->getId());
@@ -159,6 +162,63 @@ IntervalTimer::IntervalTimer(
 IntervalTimer::~IntervalTimer()
 {
    free();
+}
+
+void IntervalTimer::initFPGAConfig() {
+   // accelerator 섹션이 없으면 아무 설정도 안 하고 바로 리턴
+   if (!Sim()->getCfg()->hasKey("accelerator/pcs") ||
+       !Sim()->getCfg()->hasKey("accelerator/latencies")) {
+       return;
+   }
+
+   // 1) pcs, latencies 문자열 읽기
+   String pcs_str  = Sim()->getCfg()->getString("accelerator/pcs");
+   String lats_str = Sim()->getCfg()->getString("accelerator/latencies");
+
+  // 2) 콤마(,)로 분할하는 람다
+  auto split = [&](const String &s) {
+      std::vector<String> tokens;
+      size_t start = 0;
+      while (start < s.length()) {
+          size_t pos = s.find(',', start);
+          if (pos == String::npos) {
+              tokens.push_back(s.substr(start));
+              break;
+          }
+          tokens.push_back(s.substr(start, pos - start));
+          start = pos + 1;
+      }
+      return tokens;
+  };
+
+  std::vector<String> pc_tokens  = split(pcs_str);
+  std::vector<String> lat_tokens = split(lats_str);
+
+   // 크기 검사
+   if (pc_tokens.size() != lat_tokens.size()) {
+       fprintf(stderr,
+           "ERROR: accelerator/pcs count (%zu) != accelerator/latencies count (%zu)\n",
+           pc_tokens.size(), lat_tokens.size());
+       std::exit(1);
+   }
+
+   // 수정된 초기화: latency가 0일 때는 accelerated_set만, 0이 아닐 때는 fpga_latency_map+accelerated_set
+   for (size_t i = 0; i < pc_tokens.size(); i++) {
+       uint64_t pc  = strtoull(pc_tokens[i].c_str(), nullptr, 16);
+       uint32_t lat = static_cast<uint32_t>(std::stoul(lat_tokens[i].c_str(), nullptr, 10));
+
+       if (lat == 0) {
+           // 그룹 멤버이지만 first uop은 아님
+           accelerated_set.insert(pc);
+           accel_exec_count[pc] = 0;   // 실행 카운터만 초기화
+       }
+       else {
+           // 첫 uop: 지정 latency, 나머지 uop은 0
+           fpga_latency_map[pc] = lat;
+           accelerated_set.insert(pc);
+           accel_exec_count[pc] = 0;
+       }
+  }
 }
 
 void IntervalTimer::free()
@@ -298,7 +358,16 @@ boost::tuple<uint64_t, uint64_t> IntervalTimer::dispatchWindow() {
          #endif
       }
 
-      latency = 1;
+      // latency = 1;
+      if (!m_lastWasAccelerated) {
+         // 가속 대상이 아니면 기존처럼 1사이클 강제
+         latency = 1;
+         // m_cpiBase += 1 * micro_op_period;
+         // m_cpiBaseStopDispatch[continue_dispatching] += 1;
+      } 
+      // else: 가속 대상이므로 0사이클을 유지
+      m_lastWasAccelerated = false;  // 플래그 리셋
+
       // Update CPI-stacks
       m_cpiBase += 1 * micro_op_period;
       m_cpiBaseStopDispatch[continue_dispatching] += 1;
@@ -355,6 +424,24 @@ void IntervalTimer::issueMemOp(Windows::WindowEntry& micro_op)
 
 uint64_t IntervalTimer::dispatchInstruction(Windows::WindowEntry& micro_op, StopDispatchReason& continue_dispatching)
 {
+   // ▼ FPGA 가속 그룹 우선 처리 ▼
+   const Instruction *inst = micro_op.getMicroOp()->getInstruction();
+   uint64_t pc = inst ? inst->getAddress() : 0;
+
+   auto it = fpga_latency_map.find(pc);
+   if (it != fpga_latency_map.end()) {
+      accel_exec_count[pc]++;
+      // printf("DEBUG: [FPGA-FIRST] PC=0x%llx executed %llu times\n", (unsigned long long)pc, (unsigned long long)accel_exec_count[pc]);
+      m_lastWasAccelerated = true;
+      return it->second;
+   }
+   if (accelerated_set.count(pc)) {
+      accel_exec_count[pc]++;
+      // printf("DEBUG: [FPGA-REST]  PC=0x%llx executed %llu times\n", (unsigned long long)pc, (unsigned long long)accel_exec_count[pc]);
+      m_lastWasAccelerated = true;
+      return 0;
+   }
+   
    // If it's not already done, issue the memory operation
    issueMemOp(micro_op);
 
