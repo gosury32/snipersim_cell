@@ -36,7 +36,7 @@ more information about building the simulator and usage, please see
 <https://snipersim.org/w/Manual>.
 
 ## Publications
-
+ㅁㄴ오ㅓㅁㄴ
 If you are using Sniper, please let us know by posting a message on
 our user forum.  If you use Sniper 6.0 or later in your research,
 (if you are using the Instruction-Window Centric core model, etc.),
